@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="container">
+        <div id="preview-text">Loading...</div>
+        <div id="actions">
+            <button id="copy-btn">Copy</button>
+            <button id="search-btn">Search</button>
+        </div>
+    </div>
+
+    <script>
+        // This makes the Python 'bridge' object available in JavaScript
+        new QWebChannel(qt.webChannelTransport, function (channel) {
+            window.bridge = channel.objects.bridge;
+        });
+
+        function updateText(text) {
+            document.getElementById('preview-text').innerText = text;
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('copy-btn').addEventListener('click', () => {
+                const text = document.getElementById('preview-text').innerText;
+                bridge.onCopy(text);
+            });
+
+            document.getElementById('search-btn').addEventListener('click', () => {
+                const text = document.getElementById('preview-text').innerText;
+                bridge.onSearch(text);
+            });
+        });
+    </script>
+</body>
+</html>
