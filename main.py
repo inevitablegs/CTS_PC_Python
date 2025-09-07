@@ -1,37 +1,58 @@
-# file: main.py (MODIFIED FOR DEBUGGING)
+# file: main.py (RESTRUCTURED AND FINAL)
 
 import sys
 import os
 import threading
+import webbrowser
 from pynput import keyboard
+import io
 
+# --- PySide6 Imports ---
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
-from PySide6.QtGui import QIcon, QAction
-from PySide6.QtCore import QObject, Signal, QTimer, QLockFile, QDir, Qt, QRect, QThread
-from PySide6.QtGui import QGuiApplication # Make sure this is imported at the top
+from PySide6.QtGui import QIcon, QAction, QGuiApplication
+from PySide6.QtCore import (
+    QObject, Signal, QThread, QTimer, QLockFile, QDir, QRect, Qt
+)
 
+# --- Local Imports ---
 from overlay import OverlayWindow
-
-# --- Phase 2 (Screen Capture) Preview ---
+from popover import PopoverWindow
+from PIL import Image
 import mss
 import mss.tools
-from PIL import Image
-# ---
 
-# This is a key change to make signals work reliably from other threads
-# It allows us to pass arguments (like QRect) safely across threads
-from PySide6.QtCore import QCoreApplication
-QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
-
-
+# --- OCR Imports (already present in your code) ---
 from PIL.Image import Image as PILImage
 import asyncio
-from winsdk.windows.graphics.imaging import SoftwareBitmap, BitmapPixelFormat, BitmapAlphaMode, BitmapDecoder
+from winsdk.windows.graphics.imaging import BitmapDecoder, BitmapPixelFormat, BitmapAlphaMode, SoftwareBitmap
 from winsdk.windows.media.ocr import OcrEngine
-from winsdk.windows.storage.streams import DataReader, InMemoryRandomAccessStream
+from winsdk.windows.storage.streams import InMemoryRandomAccessStream
 
 
-from popover import PopoverWindow
+
+import easyocr
+import numpy
+
+# --- LAZY LOADER FOR THE OCR MODEL ---
+# This is a global placeholder. We'll initialize the model once on the first use.
+# This keeps the application startup very fast.
+# We specify gpu=False to ensure it runs on all systems without needing a special GPU setup.
+EASYOCR_READER = None
+
+
+def get_ocr_reader():
+    """Creates or returns the singleton OCR reader instance."""
+    global EASYOCR_READER
+    if EASYOCR_READER is None:
+        print("[INFO] Initializing EasyOCR Reader for the first time... (this may take a moment)")
+        # You can add more languages here, e.g., ['en', 'ch_sim', 'fr']
+        EASYOCR_READER = easyocr.Reader(['en'], gpu=False)
+        print("[INFO] EasyOCR Reader initialized.")
+    return EASYOCR_READER
+# ---
+# NOTE: The HotkeyListener and OcrWorker classes remain the same.
+# I am including them here so you can replace the whole file easily.
+# ---
 
 class HotkeyListener(QObject):
     """Listens for global hotkeys in a separate thread."""
@@ -41,41 +62,115 @@ class HotkeyListener(QObject):
         super().__init__()
         self.hotkey_combination = hotkey_combination
         self.listener = None
-        print(f"[DEBUG] Hotkey listener created for: {self.hotkey_combination}")
 
     def start_listening(self):
-        print("[DEBUG] Attempting to start hotkey listener thread...")
         listener_thread = threading.Thread(target=self._run, daemon=True)
         listener_thread.start()
 
     def _run(self):
-        print("[DEBUG] Hotkey listener thread is now running.")
         try:
             with keyboard.GlobalHotKeys({self.hotkey_combination: self._on_activate}) as self.listener:
                 self.listener.join()
         except Exception as e:
             print(f"[ERROR] Failed to start hotkey listener: {e}")
-            print("[ERROR] This might be a permissions issue or another app using the hotkey.")
-
 
     def _on_activate(self):
-        print("✅ [DEBUG] HOTKEY DETECTED in listener thread!")
-        # GUI operations must be done in the main thread, so we emit a signal
         self.hotkey_pressed.emit()
 
+class OcrWorker(QThread):
+    """Runs OCR in a background thread to avoid freezing the GUI."""
+    finished = Signal(str)
+    error = Signal(str)
 
-class TrayApplication:
-    def __init__(self):
-        print("[DEBUG] Initializing TrayApplication...")
-        self.popover = PopoverWindow()
-        self.last_selection_rect = None
-        self.ocr_worker = None
-        self.app = QApplication(sys.argv)
-        self.app.setQuitOnLastWindowClosed(False)
+    def __init__(self, pil_image: PILImage):
+        super().__init__()
+        self.pil_image = pil_image
 
-        self.overlay = OverlayWindow()
-        self.overlay.region_selected.connect(self.on_region_selected)
+    async def perform_ocr(self):
+        try:
+            stream = InMemoryRandomAccessStream()
+            rgba_image = self.pil_image.convert("RGBA")
+            r, g, b, a = rgba_image.split()
+            bgra_image = Image.merge("RGBA", (b, g, r, a))
+            
+            await stream.write_async(bgra_image.tobytes())
+            stream.seek(0)
+            
+            decoder = await BitmapDecoder.create_async(stream)
+            software_bitmap = await decoder.get_software_bitmap_async()
+
+            engine = OcrEngine.try_create_from_user_profile_languages()
+            if not engine:
+                self.error.emit("Could not create OCR Engine. Check language packs.")
+                return
+
+            result = await engine.recognize_async(software_bitmap)
+            self.finished.emit(result.text)
+        except Exception as e:
+            self.error.emit(f"An error occurred during OCR: {e}")
         
+    async def perform_ocr(self):
+        """
+        The core async OCR logic, using a robust in-memory PNG conversion.
+        """
+        try:
+            # 1. Save the Pillow image to an in-memory PNG byte stream.
+            #    This is a very reliable way to format image data.
+            byte_stream = io.BytesIO()
+            self.pil_image.convert("RGBA").save(byte_stream, format="PNG")
+            
+            # 2. Create a Windows Runtime stream from the PNG bytes.
+            winrt_stream = InMemoryRandomAccessStream()
+            await winrt_stream.write_async(byte_stream.getvalue())
+            winrt_stream.seek(0) # IMPORTANT: Rewind the stream to the beginning
+
+            # 3. Use BitmapDecoder to reliably create a SoftwareBitmap.
+            #    This lets Windows handle the parsing of the PNG data.
+            decoder = await BitmapDecoder.create_async(winrt_stream)
+            software_bitmap = await decoder.get_software_bitmap_async(
+                BitmapPixelFormat.BGRA8, 
+                BitmapAlphaMode.PREMULTIPLIED
+            )
+
+            # 4. Initialize OCR Engine and process the image.
+            engine = OcrEngine.try_create_from_user_profile_languages()
+            if not engine:
+                self.error.emit("Could not create OCR Engine. Check your Windows language packs.")
+                return
+
+            result = await engine.recognize_async(software_bitmap)
+            self.finished.emit(result.text)
+        except Exception as e:
+            # repr(e) gives more detailed error info
+            self.error.emit(f"An error occurred during OCR: {repr(e)}")
+
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.perform_ocr())
+
+
+# --- THE RESTRUCTURED MAIN APPLICATION CLASS ---
+class TrayApplication(QObject):
+    def __init__(self, app: QApplication):
+        super().__init__()
+        self.app = app
+        print("[DEBUG] Initializing TrayApplication...")
+        
+        # Now we create widgets, which is safe because QApplication already exists.
+        self.overlay = OverlayWindow()
+        self.popover = PopoverWindow()
+        
+        self.overlay.region_selected.connect(self.on_region_selected)
+
+        self.ocr_worker = None
+        self.last_selection_rect = None
+
+        self.setup_tray_icon()
+        self.setup_hotkey_listener()
+        print("[DEBUG] TrayApplication initialized successfully.")
+
+    def setup_tray_icon(self):
         icon_path = os.path.join(os.path.dirname(__file__), "assets/icon.png")
         if not os.path.exists(icon_path):
             print(f"[FATAL ERROR] Icon file not found at: {icon_path}")
@@ -97,34 +192,18 @@ class TrayApplication:
         self.tray_icon.show()
         print("[DEBUG] Tray icon should be visible now.")
 
-        self.hotkey_listener = HotkeyListener('<ctrl>+<shift>+ ')
+    def setup_hotkey_listener(self):
+        self.hotkey_listener = HotkeyListener('<ctrl>+<alt>+s')
         self.hotkey_listener.hotkey_pressed.connect(self.handle_show_overlay)
         self.hotkey_listener.start_listening()
-        print("[DEBUG] TrayApplication initialized successfully.")
 
     def handle_show_overlay(self):
-        print("[DEBUG] Hotkey signal received in main thread. Showing overlay...")
         self.overlay.show_overlay()
 
-    # file: main.py
-
-    # ... (keep all the other code the same) ...
-
-    
-
     def on_region_selected(self, rect: QRect):
-        """
-        Captures the region to an in-memory object and starts the OCR process.
-        """
-        print("\n--- CAPTURE INITIATED ---")
-        self.last_selection_rect = rect # Store rect for positioning the popover
-
-        # ... (The DPI calculation code is still needed) ...
+        self.last_selection_rect = rect
         selection_center = rect.center()
-        screen = QGuiApplication.screenAt(selection_center)
-        if not screen:
-            screen = QGuiApplication.primaryScreen()
-        
+        screen = QGuiApplication.screenAt(selection_center) or QGuiApplication.primaryScreen()
         pixel_ratio = screen.devicePixelRatio()
         
         capture_rect = {
@@ -138,114 +217,85 @@ class TrayApplication:
             with mss.mss() as sct:
                 sct_img = sct.grab(capture_rect)
                 pil_img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                
                 print("✅ In-memory image captured. Starting OCR worker...")
                 
-                # --- TRIGGER PHASE 3 ---
-                # Stop any previous worker
                 if self.ocr_worker and self.ocr_worker.isRunning():
                     self.ocr_worker.quit()
                     self.ocr_worker.wait()
 
-                self.ocr_worker = OcrWorker(pil_img)
+                # Use the new, robust EasyOCR worker
+                self.ocr_worker = EasyOcrWorker(pil_img)
                 self.ocr_worker.finished.connect(self.handle_ocr_result)
                 self.ocr_worker.error.connect(self.handle_ocr_error)
                 self.ocr_worker.start()
-
         except mss.exception.ScreenShotError as e:
             print(f"[ERROR] MSS screen capture failed: {e}")
 
-    # ... (the rest of your TrayApplication class definition) ...
-    # self.overlay.region_selected.connect(self.on_region_selected) # This line should already exist
-
     def handle_ocr_result(self, ocr_text):
-        """Receives text and shows it in the popover."""
-        print(f"--- OCR FINISHED ---")
         clean_text = ocr_text.strip()
         print(f"Recognized Text: {clean_text}")
-
         if not clean_text:
-            print("No text recognized.")
             return
-
-        # --- TRIGGER PHASE 4 ---
+        
         self.popover.set_text(clean_text)
-        # Position popover below the selection area
         self.popover.show_at(self.last_selection_rect.bottomLeft())
 
     def handle_ocr_error(self, error_message):
-        """Receives error messages from the OCR worker."""
         print(f"[ERROR] OCR failed: {error_message}")
         QMessageBox.warning(None, "OCR Error", error_message)
 
-    def run(self):
-        print("[DEBUG] Starting Qt application event loop...")
-        return self.app.exec()
 
-
-
-class OcrWorker(QThread):
-    """Runs OCR in a background thread to avoid freezing the GUI."""
-    finished = Signal(str) # Signal to emit recognized text
-    error = Signal(str)    # Signal to emit error messages
+# --- The New Worker Class ---
+class EasyOcrWorker(QThread):
+    """Runs EasyOCR in a background thread."""
+    finished = Signal(str)
+    error = Signal(str)
 
     def __init__(self, pil_image: PILImage):
         super().__init__()
         self.pil_image = pil_image
 
-    async def perform_ocr(self):
-        """The core async OCR logic using Windows.Media.Ocr."""
-        try:
-            # 1. Convert Pillow image to a format Windows OCR can understand
-            stream = InMemoryRandomAccessStream()
-            # Pillow images are RGB, but we need BGRA for SoftwareBitmap
-            rgba_image = self.pil_image.convert("RGBA")
-            # Invert channels from RGBA to BGRA
-            r, g, b, a = rgba_image.split()
-            bgra_image = Image.merge("RGBA", (b, g, r, a))
-            
-            await stream.write_async(bgra_image.tobytes())
-            stream.seek(0)
-            
-            decoder = await BitmapDecoder.create_async(stream)
-            software_bitmap = await decoder.get_software_bitmap_async()
-
-            # 2. Initialize OCR Engine and process the image
-            engine = OcrEngine.try_create_from_user_profile_languages()
-            if not engine:
-                self.error.emit("Could not create OCR Engine. Check language packs.")
-                return
-
-            result = await engine.recognize_async(software_bitmap)
-            self.finished.emit(result.text)
-        except Exception as e:
-            self.error.emit(f"An error occurred during OCR: {e}")
-
     def run(self):
         """Entry point for the thread."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.perform_ocr())
+        try:
+            # 1. Get the initialized OCR reader. The first time this runs, it will be slow.
+            reader = get_ocr_reader()
 
-# file: main.py (at the very bottom)
+            # 2. Convert the Pillow image to a NumPy array, which EasyOCR expects.
+            image_np = numpy.array(self.pil_image)
 
+            # 3. Perform OCR. result is a list of (bbox, text, confidence).
+            result = reader.readtext(image_np)
+
+            # 4. Extract and join the recognized text.
+            recognized_texts = [text for bbox, text, conf in result]
+            full_text = "\n".join(recognized_texts)
+
+            self.finished.emit(full_text)
+
+        except Exception as e:
+            self.error.emit(f"An error occurred during EasyOCR: {repr(e)}")
+
+# --- THE NEW, FOOLPROOF MAIN EXECUTION BLOCK ---
 if __name__ == "__main__":
-    # Set High DPI scaling policies before creating the application object.
+    # 1. Set DPI policies before anything else.
     if sys.platform == "win32":
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QGuiApplication
-        
-        # This one is still useful for non-integer scaling
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-        # This one is deprecated and can be removed.
-        # QGuiApplication.setAttribute(Qt.AA_EnableHighDpiScaling) 
     
     print("--- Starting Application ---")
-    lock_file = QLockFile(os.path.join(QDir.tempPath(), "circle-to-search.lock"))
     
+    # 2. Handle single instance lock.
+    lock_file = QLockFile(os.path.join(QDir.tempPath(), "circle-to-search.lock"))
     if not lock_file.tryLock(100):
         print("[ERROR] Another instance is already running. Exiting.")
         sys.exit(0)
+    
+    # 3. Create the QApplication object FIRST. This is the fix.
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
 
-    tray_app = TrayApplication()
-    sys.exit(tray_app.run())
+    # 4. THEN create our application controller.
+    main_controller = TrayApplication(app)
+
+    # 5. Start the event loop.
+    sys.exit(app.exec())
