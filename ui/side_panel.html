@@ -2,11 +2,15 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="side_panel.css">
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 </head>
 <body>
     <div id="container">
+        <div id="header">
+            <span id="title">Search Results</span>
+            <button id="close-btn" title="Close">&times;</button>
+        </div>
         <div id="preview-text">Loading...</div>
         <div id="actions">
             <button id="copy-btn">Copy</button>
@@ -15,7 +19,6 @@
     </div>
 
     <script>
-        // This makes the Python 'bridge' object available in JavaScript
         new QWebChannel(qt.webChannelTransport, function (channel) {
             window.bridge = channel.objects.bridge;
         });
@@ -25,6 +28,11 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            // Add event listener for the new close button
+            document.getElementById('close-btn').addEventListener('click', () => {
+                bridge.onClose();
+            });
+
             document.getElementById('copy-btn').addEventListener('click', () => {
                 const text = document.getElementById('preview-text').innerText;
                 bridge.onCopy(text);
