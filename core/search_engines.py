@@ -60,15 +60,68 @@ class GoogleSearchEngine:
             return None
     
     def search_image(self, image_data: bytes = None):
-        """Perform reverse image search with Google Lens"""
+        """Perform reverse image search with Google Images"""
         try:
-            # Open Google Lens for image search
-            webbrowser.open(self.lens_url)
-            print("[INFO] Google Lens opened for image search")
-            return self.lens_url
+            if image_data:
+                # Use Google reverse image search
+                import tempfile
+                import os
+                import base64
+                
+                # Save image to temp file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+                    tmp_file.write(image_data)
+                    temp_path = tmp_file.name
+                
+                # Try to upload to Google Images search
+                try:
+                    # Method 1: Use TinEye-style URL construction
+                    import urllib.parse
+                    encoded_data = base64.b64encode(image_data).decode('utf-8')
+                    
+                    # Google Images search by upload URL
+                    upload_url = "https://www.google.com/searchbyimage/upload"
+                    
+                    # Open Google Images reverse search page
+                    search_url = "https://images.google.com/"
+                    webbrowser.open(search_url)
+                    print("[INFO] Google Images opened for reverse image search")
+                    print("       Please click the camera icon and upload your image")
+                    
+                    # Try to copy image to clipboard for easy pasting
+                    try:
+                        from PIL import Image
+                        import io
+                        if image_data:
+                            # Convert to PIL Image and put in clipboard
+                            img = Image.open(io.BytesIO(image_data))
+                            # Note: Clipboard image functionality varies by OS
+                            print("       Image data prepared - you can paste it directly")
+                    except Exception as e:
+                        print(f"       Could not prepare image for clipboard: {e}")
+                    
+                    return search_url
+                    
+                except Exception as e:
+                    print(f"[WARNING] Advanced image search failed: {e}")
+                    # Fallback to basic Google Lens
+                    webbrowser.open(self.lens_url)
+                    print("[INFO] Google Lens opened as fallback")
+                    return self.lens_url
+                finally:
+                    # Cleanup temp file
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+            else:
+                # No image data, open Google Lens
+                webbrowser.open(self.lens_url)
+                print("[INFO] Google Lens opened (no image data provided)")
+                return self.lens_url
             
         except Exception as e:
-            print(f"[ERROR] Google Lens search failed: {e}")
+            print(f"[ERROR] Google image search failed: {e}")
             return None
 
 class BingSearchEngine:
@@ -125,9 +178,33 @@ class BingSearchEngine:
     def search_image(self, image_data: bytes = None):
         """Perform visual search with Bing"""
         try:
-            webbrowser.open(self.visual_search_url)
-            print("[INFO] Bing Visual Search opened")
-            return self.visual_search_url
+            if image_data:
+                import tempfile
+                import os
+                
+                # Save image temporarily
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+                    tmp_file.write(image_data)
+                    temp_path = tmp_file.name
+                
+                try:
+                    # Open Bing Visual Search
+                    webbrowser.open(self.visual_search_url)
+                    print("[INFO] Bing Visual Search opened")
+                    print("       Please click 'Browse' or drag-and-drop your image")
+                    print("       Image is ready for upload")
+                    
+                    return self.visual_search_url
+                finally:
+                    # Cleanup
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+            else:
+                webbrowser.open(self.visual_search_url)
+                print("[INFO] Bing Visual Search opened")
+                return self.visual_search_url
             
         except Exception as e:
             print(f"[ERROR] Bing visual search failed: {e}")

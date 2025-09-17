@@ -222,37 +222,40 @@ class SidePanelWindow(QWidget):
             print(f"[INFO] Searching text: {query}")
 
     def search_image(self):
-        """Search using the captured image"""
-        if self.search_manager and self.current_image:
+        """Search using the captured image with enhanced functionality"""
+        if self.current_image:
             try:
-                if self.image_processor:
-                    # Enhance image for search
-                    enhanced_image = self.image_processor.enhance_for_search(self.current_image)
-                else:
-                    enhanced_image = self.current_image
+                print("[INFO] Starting enhanced image search...")
                 
                 if self.image_search_handler:
-                    # Prepare image for search
-                    image_bytes, temp_path = self.image_search_handler.prepare_image_for_search(enhanced_image)
-                    
-                    # Perform reverse image search
-                    result_url = self.search_manager.search_image(image_data=image_bytes)
+                    # Use enhanced search handler
+                    current_engine = self.search_manager.get_current_engine() if self.search_manager else "google"
+                    result_url = self.image_search_handler.perform_advanced_search(
+                        self.current_image, 
+                        current_engine
+                    )
                     
                     if result_url:
-                        print(f"[INFO] Image search initiated: {result_url}")
+                        print(f"[INFO] Enhanced image search initiated: {result_url}")
                     else:
-                        print("[WARNING] Image search failed")
-                    
-                    # Cleanup
-                    self.image_search_handler.cleanup_temp_files()
+                        print("[WARNING] Enhanced image search failed, using fallback")
+                        self._fallback_image_search()
                 else:
                     # Fallback to basic image search
-                    print("[INFO] Basic image search - opening Google Lens")
-                    import webbrowser
-                    webbrowser.open("https://lens.google.com/")
+                    self._fallback_image_search()
                 
             except Exception as e:
                 print(f"[ERROR] Image search error: {e}")
+                self._fallback_image_search()
+        else:
+            print("[WARNING] No image available for search")
+    
+    def _fallback_image_search(self):
+        """Fallback image search method"""
+        print("[INFO] Using fallback image search - opening Google Images")
+        import webbrowser
+        webbrowser.open("https://images.google.com/")
+        print("📖 Click the camera icon 📷 in Google Images to upload your screenshot")
 
     def show_panel(self, relative_rect=None):
         """Show the side panel"""
