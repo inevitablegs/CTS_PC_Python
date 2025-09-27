@@ -696,12 +696,7 @@ class DirectHotkeyApplication(QObject):
         clean_text = ocr_text.strip()
         print(f"✅ OCR Result: {clean_text}")
         
-        # Save captured files permanently
-        image_path, text_path = self.search_engine.image_handler.save_capture_permanently(
-            self.last_captured_image, clean_text
-        )
-        
-        # Auto-copy to clipboard
+        # Auto-copy to clipboard (no saving)
         if clean_text:
             try:
                 pyperclip.copy(clean_text)
@@ -709,26 +704,19 @@ class DirectHotkeyApplication(QObject):
             except Exception as e:
                 print(f"[WARNING] Could not copy to clipboard: {e}")
         
-        # Auto-search on Google if text is found
-        if clean_text and self.search_engine.auto_search:
-            print("[INFO] 🔍 Auto-searching on Google...")
-            self.search_engine.search_text(clean_text)
-        
-        # Show results with enhanced image search
-        self.side_panel.set_content(clean_text, self.last_captured_image, self.search_engine)
-        self.side_panel.show_panel(self.last_selection_rect)
-        
-        # Show notification with file save info (console only)
+        # Direct browser search - no panel, no saving
         if clean_text:
-            save_info = f"Saved to: {os.path.basename(image_path)}" if image_path else ""
-            print(f"✅ Text Found & Saved: {clean_text[:40]}{'...' if len(clean_text) > 40 else ''}")
-            print(f"🔍 Auto-searched on Google!")
-            print(f"💾 {save_info}")
+            print("[INFO] 🔍 Opening Google search directly...")
+            self.search_engine.search_text(clean_text)
+            print(f"✅ Text Found: {clean_text[:40]}{'...' if len(clean_text) > 40 else ''}")
+            print(f"🔍 Google search opened directly!")
         else:
-            save_info = f"Saved to: {os.path.basename(image_path)}" if image_path else ""
-            print(f"📷 Image Captured & Saved!")
-            print(f"💾 {save_info}")
-            print("📷 Image search available in side panel")
+            # If no text, open Google Images for reverse image search
+            if self.last_captured_image:
+                print("[INFO] 📷 No text found - opening Google Images for image search...")
+                self.search_engine.search_image(self.last_captured_image)
+                print(f"📷 Image Captured!")
+                print("📷 Google Images opened for reverse search!")
 
     def handle_ocr_error(self, error_message):
         """Handle OCR errors"""
@@ -756,9 +744,7 @@ if __name__ == "__main__":
     print("📖 How to use:")
     print("   🎯 Press Ctrl+Shift+Space OR Ctrl+Alt+S to capture")
     print("   🔍 Text automatically searches on Google!")
-    print("   📷 Captured images can be searched on Google!")
-    print("   💾 All captures are saved automatically!")
-    print("   📁 Files saved to: Documents\\CircleToSearch_Captures\\")
+    print("   📷 Images automatically open Google Images!")
     print("   📋 Text is auto-copied to clipboard")
     print("   ❌ Press Ctrl+C in terminal to quit")
 
